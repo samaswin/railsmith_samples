@@ -1,0 +1,61 @@
+# Services for exercising Railsmith async nested writes against real queue
+# backends. Bring up with:
+#
+#   docker compose up -d
+#
+# Then run the real-jobs integration suite from the repo root:
+#
+#   bundle exec rails runner test_railsmith_real_jobs.rb
+#
+# Notes:
+# * Postgres is published on the standard port 5432 with the same credentials
+#   the checked-in config/database.yml expects (user: aswin, password: aswin).
+#   If you already run a local Postgres on 5432 you'll either need to stop it
+#   or change the host port below (e.g. "5433:5432") and update database.yml.
+# * Redis is published on 6379 for Sidekiq.
+# * RabbitMQ is optional; only needed for the Sneakers/Kicks sections. The
+#   management UI is at http://localhost:15672 (guest/guest).
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: railsmith_sample_postgres
+    environment:
+      POSTGRES_USER: aswin
+      POSTGRES_PASSWORD: aswin
+      POSTGRES_DB: railsmith_sample_development
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aswin -d railsmith_sample_development"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: railsmith_sample_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: railsmith_sample_rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  pg_data:

@@ -567,11 +567,13 @@ def restore_async_config!(job_class, enqueuer)
   Railsmith.configuration.async_enqueuer  = enqueuer
 end
 
-# ── 18. ASYNC: ActiveJob (default — works with SolidQueue/GoodJob/DelayedJob) ─
-puts "\n=== 18. Async Nested Writes (ActiveJob — SolidQueue/GoodJob/DelayedJob) ==="
+# ── 18. ASYNC: ActiveJob inline-adapter smoke test ───────────────────────────
+puts "\n=== 18. Async Nested Writes (ActiveJob :inline smoke test) ==="
 
-# Use ActiveJob inline adapter so jobs execute immediately (simulates all
-# ActiveJob-compatible backends: SolidQueue, GoodJob, DelayedJob, Sidekiq-via-AJ)
+# Uses the ActiveJob :inline adapter — jobs run synchronously in the same
+# process. This proves the enqueue path wires up against ActiveJob at all;
+# it does NOT prove the async timing contract (parent-commits-before-child).
+# That contract is exercised in section 31 with the :test adapter.
 previous_aj_adapter = ActiveJob::Base.queue_adapter
 ActiveJob::Base.queue_adapter = :inline
 Railsmith.configuration.async_job_class = Railsmith::AsyncNestedWriteJob
@@ -648,7 +650,8 @@ ActiveJob::Base.queue_adapter = :inline
 Railsmith.configuration.async_job_class = Railsmith::AsyncNestedWriteJob
 Railsmith.configuration.async_enqueuer  = nil
 
-# nested_write.enqueued.railsmith event fires on enqueue
+# nested_write.enqueued.railsmith event fires on enqueue — and must carry a
+# payload that identifies the association, mode, parent, and job handle.
 enqueued_events = []
 sub_enqueue = ActiveSupport::Notifications.subscribe("nested_write.enqueued.railsmith") { |*args| enqueued_events << args }
 
@@ -661,6 +664,33 @@ ri1 = PostWithAsyncCommentsService.call(
   context: ctx
 )
 assert("instrumentation: enqueued event fires", enqueued_events.any?)
+
+# Inspect the payload (4th element of the AS::Notifications args array).
+# We verify the event carries enough info to correlate with the meta returned
+# to the caller — specifically the job_id — rather than asserting on every
+# possible key the gem might include.
+event_payload = enqueued_events.last && enqueued_events.last[4]
+assert("instrumentation: payload is a Hash", event_payload.is_a?(Hash))
+
+# Flexible fetch: accept either symbol or string keys.
+fetch_payload_key = ->(key) {
+  next nil unless event_payload.is_a?(Hash)
+  event_payload[key] || event_payload[key.to_s] || event_payload[key.to_sym]
+}
+
+payload_job_id   = fetch_payload_key.call(:job_id)
+payload_assoc    = fetch_payload_key.call(:association)
+meta_job_id      = ri1.meta.dig(:nested, :comments, :job_id)
+
+assert(
+  "instrumentation: payload job_id present and matches result.meta job_id",
+  !payload_job_id.nil? && payload_job_id == meta_job_id
+)
+assert(
+  "instrumentation: payload association names :comments (symbol or string)",
+  payload_assoc.to_s == "comments"
+)
+
 ActiveSupport::Notifications.unsubscribe(sub_enqueue)
 
 ActiveJob::Base.queue_adapter = previous_aj_adapter
@@ -668,12 +698,16 @@ ActiveJob::Base.queue_adapter = previous_aj_adapter
 # ── 20. ASYNC: Context propagation ──────────────────────────────────────────
 puts "\n=== 20. Async Context Propagation ==="
 
-ActiveJob::Base.queue_adapter = :inline
+# Use :test so we can intercept the enqueued payload AND run it manually.
+# That lets us prove two distinct things:
+#  (a) the context the caller supplied was serialized into the job payload
+#  (b) when the job runs, that context is in scope for the nested service
+ActiveJob::Base.queue_adapter = :test
+ActiveJob::Base.queue_adapter.enqueued_jobs.clear
 Railsmith.configuration.async_job_class = Railsmith::AsyncNestedWriteJob
 Railsmith.configuration.async_enqueuer  = nil
 
-# The async job should receive and rebuild context with request_id, actor_id, etc.
-rich_ctx = { current_domain: :blog, request_id: "req-async-123", actor_id: 42 }
+rich_ctx = { current_domain: :blog, request_id: "req-async-123", actor_id: 42, tenant_id: "t-9" }
 rc1 = PostWithAsyncCommentsService.call(
   action: :create,
   params: {
@@ -683,7 +717,50 @@ rc1 = PostWithAsyncCommentsService.call(
   context: rich_ctx
 )
 assert("context propagation: parent created", rc1.success?)
-assert("context propagation: comments created (context passed to job)", Comment.exists?(author: "Ctx", body: "Context test"))
+assert("context propagation: comments NOT yet persisted (job deferred)", !Comment.exists?(author: "Ctx", body: "Context test"))
+
+# (a) Serialized payload must carry the context verbatim.
+cprop_job = ActiveJob::Base.queue_adapter.enqueued_jobs.last
+cprop_args = cprop_job[:args].first
+serialized_ctx = cprop_args["context"] || cprop_args[:context] || {}
+# The payload uses string or symbol keys depending on serialization — normalize.
+ctx_fetch = ->(key) { serialized_ctx[key] || serialized_ctx[key.to_s] || serialized_ctx[key.to_sym] }
+assert("context propagation: request_id serialized into payload", ctx_fetch.call(:request_id) == "req-async-123")
+assert("context propagation: actor_id serialized into payload",   ctx_fetch.call(:actor_id)   == 42)
+assert("context propagation: tenant_id serialized into payload",  ctx_fetch.call(:tenant_id)  == "t-9")
+
+# (b) When the job runs, the nested service should rebuild context from the
+# serialized payload. Probe this by wrapping Railsmith::Context.build to
+# record the hash it receives while the job is executing — this proves the
+# worker actually feeds the payload through the Context builder instead of
+# silently dropping it.
+observed_builds = []
+Railsmith::Context.singleton_class.class_eval do
+  alias_method :__orig_build_for_probe, :build unless method_defined?(:__orig_build_for_probe)
+  define_method(:build) do |attrs = {}|
+    observed_builds << attrs
+    __orig_build_for_probe(attrs)
+  end
+end
+
+Railsmith::AsyncNestedWriteJob.perform_now(**cprop_args.transform_keys(&:to_sym))
+
+Railsmith::Context.singleton_class.class_eval do
+  alias_method :build, :__orig_build_for_probe
+  remove_method :__orig_build_for_probe
+end
+
+# Find at least one build call that matches the rich_ctx identifiers.
+matching_build = observed_builds.find do |h|
+  h.is_a?(Hash) && (
+    (h[:request_id] || h["request_id"]) == "req-async-123" &&
+    ((h[:actor_id]   || h["actor_id"])   == 42)
+  )
+end
+
+assert("context propagation: job invoked Railsmith::Context.build", observed_builds.any?)
+assert("context propagation: request_id+actor_id reached Context.build inside job", !matching_build.nil?)
+assert("context propagation: comment actually persisted by job", Comment.exists?(author: "Ctx", body: "Context test"))
 
 ActiveJob::Base.queue_adapter = previous_aj_adapter
 
@@ -977,7 +1054,11 @@ assert("no nested key: no job enqueued", fake_sidekiq_worker.jobs.empty?)
 # ── 29. ASYNC: Sync associations still work alongside async ─────────────────
 puts "\n=== 29. Sync + Async side by side ==="
 
-ActiveJob::Base.queue_adapter = :inline
+# Use :test so the timing difference between sync-in-transaction vs
+# async-after-commit is actually observable. With :inline the two are
+# indistinguishable — both end up written synchronously.
+ActiveJob::Base.queue_adapter = :test
+ActiveJob::Base.queue_adapter.enqueued_jobs.clear
 Railsmith.configuration.async_job_class = Railsmith::AsyncNestedWriteJob
 Railsmith.configuration.async_enqueuer  = nil
 
@@ -1000,14 +1081,23 @@ rmx1 = MixedSyncAsyncService.call(
   context: ctx
 )
 assert("mixed: parent created", rmx1.success?)
+# Sync child MUST be in DB right now — it was written inside the parent transaction.
 assert("mixed: sync has_one meta persisted in transaction", PostMeta.exists?(post_id: rmx1.value.id, summary: "Sync meta"))
-# With inline adapter, async comments also written
-assert("mixed: async comments written (inline adapter)", Comment.exists?(post_id: rmx1.value.id, author: "Async"))
+# Async child MUST NOT be in DB yet — it was deferred to a job.
+assert("mixed: async comments NOT yet persisted (deferred to job)", !Comment.exists?(post_id: rmx1.value.id, author: "Async"))
+assert("mixed: exactly one job enqueued for async association", ActiveJob::Base.queue_adapter.enqueued_jobs.size == 1)
 
-# meta should have both nested entries
+# Run the job — now the async child should appear.
+mixed_job = ActiveJob::Base.queue_adapter.enqueued_jobs.last
+Railsmith::AsyncNestedWriteJob.perform_now(**mixed_job[:args].first.transform_keys(&:to_sym))
+assert("mixed: async comment persisted after job runs", Comment.exists?(post_id: rmx1.value.id, author: "Async"))
+
+# meta should have both nested entries with correct async flags
 assert("mixed: sync meta in result.meta", rmx1.meta&.dig(:nested, :post_meta))
-assert("mixed: async meta flags async: true", rmx1.meta&.dig(:nested, :comments, :async) == true)
+assert("mixed: sync post_meta meta does NOT flag async", rmx1.meta&.dig(:nested, :post_meta, :async) != true)
+assert("mixed: async comments meta flags async: true", rmx1.meta&.dig(:nested, :comments, :async) == true)
 
+ActiveJob::Base.queue_adapter.enqueued_jobs.clear
 ActiveJob::Base.queue_adapter = previous_aj_adapter
 
 # ── 30. ASYNC: RailsmithKicksPublisher (sample app publisher) ───────────────
@@ -1118,7 +1208,10 @@ assert("job failure: parent committed despite bad child params", rjf1.success?)
 assert("job failure: parent in DB", Post.exists?(title: "Survives Child Failure"))
 assert("job failure: child NOT persisted", !Comment.exists?(post_id: rjf1.value.id))
 
-# Execute the job — it should raise because author/body are blank
+# Execute the job — it should raise because author/body are blank. We assert
+# specifically on a validation-style error (RecordInvalid / ValidationError /
+# Railsmith::Error) rather than "anything non-nil", so unrelated exceptions
+# (e.g. a typo in the test harness) don't accidentally pass.
 job_data_fail = ActiveJob::Base.queue_adapter.enqueued_jobs.last
 failed_job_error = nil
 begin
@@ -1127,6 +1220,22 @@ rescue => e
   failed_job_error = e
 end
 assert("job failure: job raises on invalid child", !failed_job_error.nil?)
+
+expected_failure_classes = [
+  ActiveRecord::RecordInvalid,
+  defined?(Railsmith::NestedWriteError) ? Railsmith::NestedWriteError : nil,
+  defined?(Railsmith::ValidationError)  ? Railsmith::ValidationError  : nil,
+  defined?(Railsmith::Error)            ? Railsmith::Error            : nil
+].compact
+
+assert(
+  "job failure: error class is validation-shaped (got #{failed_job_error&.class})",
+  failed_job_error && expected_failure_classes.any? { |klass| failed_job_error.is_a?(klass) }
+)
+assert(
+  "job failure: error message mentions validation / blank / required fields",
+  failed_job_error && failed_job_error.message.to_s.match?(/blank|can't be|validation|invalid/i)
+)
 # Parent STILL exists — this is the key contract
 assert("job failure: parent STILL in DB after child job fails", Post.exists?(title: "Survives Child Failure"))
 assert("job failure: invalid child NOT persisted", !Comment.exists?(post_id: rjf1.value.id))
@@ -1162,6 +1271,35 @@ rescue
 end
 
 assert("failure instrumentation: event fired", failed_events.any?)
+
+# Payload must identify what failed: association, parent_id, and the error.
+failure_event_payload = failed_events.last && failed_events.last[4]
+assert("failure instrumentation: payload is a Hash", failure_event_payload.is_a?(Hash))
+
+failure_fetch = ->(key) {
+  next nil unless failure_event_payload.is_a?(Hash)
+  failure_event_payload[key] || failure_event_payload[key.to_s] || failure_event_payload[key.to_sym]
+}
+
+assert(
+  "failure instrumentation: payload names :comments association",
+  failure_fetch.call(:association).to_s == "comments"
+)
+assert(
+  "failure instrumentation: payload carries parent_id of the surviving post",
+  failure_fetch.call(:parent_id) == rfi1.value.id
+)
+
+# The error field should carry either the exception or a readable message.
+error_field = failure_fetch.call(:error) || failure_fetch.call(:exception) || failure_fetch.call(:error_message)
+assert(
+  "failure instrumentation: payload carries error info",
+  !error_field.nil? &&
+    (error_field.is_a?(Exception) ||
+     (error_field.is_a?(String) && error_field.match?(/blank|can't be|validation|invalid/i)) ||
+     (error_field.is_a?(Array) && error_field.any? { |x| x.to_s.match?(/blank|can't be|validation|invalid/i) }))
+)
+
 ActiveSupport::Notifications.unsubscribe(sub_fail)
 
 # ── 34. PARENT DELETED BEFORE JOB RUNS ──────────────────────────────────────
@@ -1327,48 +1465,98 @@ assert("async bulk_create: comment B persisted after job", Comment.exists?(post_
 # ── 38. REAL WORKER EXECUTION: RailsmithNestedWriteWorker ───────────────────
 puts "\n=== 38. Real Sidekiq Worker Execution ==="
 
-Railsmith.configuration.async_job_class = Railsmith::AsyncNestedWriteJob
+# The goal here is to verify the END-TO-END contract between the gem and the
+# worker: the gem must produce a payload in a shape the worker can consume.
+# Previous versions of this test hand-wrote a payload; that only proved the
+# worker can accept a payload of the test author's imagination.
+#
+# To properly exercise the contract we:
+#   1. Point async_job_class at RailsmithNestedWriteWorker and stub
+#      perform_async so it captures the payload the gem produces.
+#   2. Drive a normal service call — this is the gem's enqueue path.
+#   3. Feed the captured payload back into an actual worker instance.
+# That chain proves the gem's output is a valid input to the worker.
+
+captured_worker_payloads = []
+# Shadow .perform_async on the singleton class — fallback to Sidekiq::Worker's
+# real perform_async is restored below by removing the shadow.
+RailsmithNestedWriteWorker.define_singleton_method(:perform_async) do |payload|
+  captured_worker_payloads << payload
+  "real-jid-#{captured_worker_payloads.size}"
+end
+
+Railsmith.configuration.async_job_class = RailsmithNestedWriteWorker
 Railsmith.configuration.async_enqueuer  = nil
 
-# Build a real payload (the same shape the gem produces)
-p_worker = Post.create!(title: "Worker Execution Post", status: "draft")
-worker_payload = {
-  "service_class" => "PostWithAsyncCommentsService",
-  "association"   => "comments",
-  "parent_id"     => p_worker.id,
-  "nested_params" => [{ "attributes" => { "author" => "SidekiqReal", "body" => "Real worker test" } }],
-  "mode"          => "create",
-  "context"       => { "current_domain" => "blog", "request_id" => "worker-req-1" }
-}
+rwrk = PostWithAsyncCommentsService.call(
+  action: :create,
+  params: {
+    attributes: { title: "Worker Execution Post", status: "draft" },
+    comments: [{ attributes: { author: "SidekiqReal", body: "Real worker test" } }]
+  },
+  context: { current_domain: :blog, request_id: "worker-req-1" }
+)
+assert("real worker: parent created through gem", rwrk.success?)
+assert("real worker: gem routed to perform_async (payload captured)", captured_worker_payloads.size == 1)
 
-# Execute the worker directly (simulates Sidekiq calling perform)
-RailsmithNestedWriteWorker.new.perform(worker_payload)
-assert("real worker: comment created", Comment.exists?(post_id: p_worker.id, author: "SidekiqReal"))
+captured_payload = captured_worker_payloads.first
+assert("real worker: captured payload is a Hash", captured_payload.is_a?(Hash))
+
+# The payload must carry the pieces the worker's perform needs.
+pw_fetch = ->(key) { captured_payload[key] || captured_payload[key.to_s] || captured_payload[key.to_sym] }
+assert("real worker: payload names service_class",  pw_fetch.call(:service_class).to_s == "PostWithAsyncCommentsService")
+assert("real worker: payload carries parent_id",    pw_fetch.call(:parent_id) == rwrk.value.id)
+assert("real worker: payload carries association",  pw_fetch.call(:association).to_s == "comments")
+assert("real worker: payload carries mode :create", pw_fetch.call(:mode).to_s == "create")
+assert("real worker: payload carries context",      pw_fetch.call(:context).is_a?(Hash))
+
+# Child NOT written yet — perform_async was stubbed so nothing ran.
+assert("real worker: child NOT yet persisted (we stubbed perform_async)", !Comment.exists?(post_id: rwrk.value.id, author: "SidekiqReal"))
+
+# Restore perform_async (drop our shadow — Sidekiq::Worker's version resurfaces).
+RailsmithNestedWriteWorker.singleton_class.send(:remove_method, :perform_async)
+
+RailsmithNestedWriteWorker.new.perform(captured_payload)
+assert("real worker: child persisted after worker#perform on gem-produced payload", Comment.exists?(post_id: rwrk.value.id, author: "SidekiqReal"))
 
 # ── 39. REAL WORKER EXECUTION: RailsmithKicksPublisher.drain! ───────────────
 puts "\n=== 39. Real Kicks Publisher Drain Execution ==="
+
+# End-to-end: drive the gem's enqueue path so the PUBLISHED_MESSAGES queue
+# gets a real gem-produced payload, then call drain! to actually process it.
+# Previous revisions hand-built the payload, which proved nothing about the
+# gem↔publisher contract.
 
 Railsmith.configuration.async_job_class = RailsmithKicksPublisher
 Railsmith.configuration.async_enqueuer  = ->(job_class, payload) { job_class.publish(payload) }
 RailsmithKicksPublisher.clear!
 
-p_kicks = Post.create!(title: "Kicks Execution Post", status: "draft")
+rkrun = PostWithAsyncCommentsService.call(
+  action: :create,
+  params: {
+    attributes: { title: "Kicks Execution Post", status: "draft" },
+    comments: [{ attributes: { author: "KicksReal", body: "Real kicks test" } }]
+  },
+  context: { current_domain: :blog, request_id: "kicks-req-1" }
+)
+assert("real kicks: parent created through gem", rkrun.success?)
+assert("real kicks: gem published exactly one message", RailsmithKicksPublisher::PUBLISHED_MESSAGES.size == 1)
 
-# Manually build and publish the payload (same shape the gem produces)
-kicks_payload = {
-  service_class: "PostWithAsyncCommentsService",
-  association:   "comments",
-  parent_id:     p_kicks.id,
-  nested_params: [{ attributes: { author: "KicksReal", body: "Real kicks test" } }],
-  mode:          "create",
-  context:       { current_domain: :blog, request_id: "kicks-req-1" }
+# Inspect the gem-produced payload before draining it.
+gem_produced = RailsmithKicksPublisher::PUBLISHED_MESSAGES.first
+gem_fetch = ->(key) {
+  next nil unless gem_produced.is_a?(Hash)
+  gem_produced[key] || gem_produced[key.to_s] || gem_produced[key.to_sym]
 }
-RailsmithKicksPublisher.publish(kicks_payload)
-assert("real kicks: message in queue", RailsmithKicksPublisher::PUBLISHED_MESSAGES.size == 1)
-assert("real kicks: comment NOT yet persisted", !Comment.exists?(post_id: p_kicks.id, author: "KicksReal"))
+assert("real kicks: payload carries service_class",     gem_fetch.call(:service_class).to_s == "PostWithAsyncCommentsService")
+assert("real kicks: payload carries parent_id",         gem_fetch.call(:parent_id) == rkrun.value.id)
+assert("real kicks: payload carries association name",  gem_fetch.call(:association).to_s == "comments")
+assert("real kicks: payload carries :create mode",      gem_fetch.call(:mode).to_s == "create")
+assert("real kicks: comment NOT yet persisted",         !Comment.exists?(post_id: rkrun.value.id, author: "KicksReal"))
 
 RailsmithKicksPublisher.drain!
-assert("real kicks: comment persisted after drain", Comment.exists?(post_id: p_kicks.id, author: "KicksReal"))
+assert("real kicks: queue empty after drain",           RailsmithKicksPublisher::PUBLISHED_MESSAGES.empty?)
+assert("real kicks: comment persisted after drain",     Comment.exists?(post_id: rkrun.value.id, author: "KicksReal"))
 
 # ── 40. CONTEXT SERIALIZATION ROUND-TRIP ────────────────────────────────────
 puts "\n=== 40. Context Serialization Round-Trip ==="
@@ -1402,14 +1590,41 @@ assert("context roundtrip: parent created", rct1.success?)
 job_data_ctx = ActiveJob::Base.queue_adapter.enqueued_jobs.last
 job_args = job_data_ctx[:args].first
 serialized_ctx = job_args["context"] || job_args[:context]
+rt_fetch = ->(key) { serialized_ctx[key] || serialized_ctx[key.to_s] || serialized_ctx[key.to_sym] }
 
-assert("context roundtrip: request_id survives", serialized_ctx[:request_id] == "roundtrip-req-abc" || serialized_ctx["request_id"] == "roundtrip-req-abc")
-assert("context roundtrip: actor_id survives", (serialized_ctx[:actor_id] || serialized_ctx["actor_id"]) == 42)
-assert("context roundtrip: tenant_id survives", (serialized_ctx[:tenant_id] || serialized_ctx["tenant_id"]) == "org-xyz")
+assert("context roundtrip: request_id survives", rt_fetch.call(:request_id) == "roundtrip-req-abc")
+assert("context roundtrip: actor_id survives",   rt_fetch.call(:actor_id)   == 42)
+assert("context roundtrip: tenant_id survives",  rt_fetch.call(:tenant_id)  == "org-xyz")
+# Arrays must survive ActiveJob's JSON serialization round-trip intact.
+roles_roundtrip = rt_fetch.call(:roles)
+assert(
+  "context roundtrip: roles array survives serialization",
+  roles_roundtrip.is_a?(Array) && roles_roundtrip.map(&:to_s).sort == %w[admin editor]
+)
 
-# Now execute the job and verify the context was rebuilt correctly inside the service
-# (if the context was broken, the job would fail or the child write would behave differently)
+# Prove the context is actually rebuilt at job-run time — not just that the
+# payload carried it. We wrap Railsmith::Context.build to observe what the
+# job hands it, and then verify the nested write completed.
+observed_rt_builds = []
+Railsmith::Context.singleton_class.class_eval do
+  alias_method :__orig_build_for_rt_probe, :build unless method_defined?(:__orig_build_for_rt_probe)
+  define_method(:build) do |attrs = {}|
+    observed_rt_builds << attrs
+    __orig_build_for_rt_probe(attrs)
+  end
+end
+
 Railsmith::AsyncNestedWriteJob.perform_now(**job_args.transform_keys(&:to_sym))
+
+Railsmith::Context.singleton_class.class_eval do
+  alias_method :build, :__orig_build_for_rt_probe
+  remove_method :__orig_build_for_rt_probe
+end
+
+rt_build_match = observed_rt_builds.find do |h|
+  h.is_a?(Hash) && (h[:request_id] || h["request_id"]) == "roundtrip-req-abc"
+end
+assert("context roundtrip: Context.build invoked with our request_id at job runtime", !rt_build_match.nil?)
 assert("context roundtrip: child created successfully (context intact)", Comment.exists?(post_id: rct1.value.id, author: "CtxRT"))
 
 # ── 41. ASYNC: enqueue path for .enqueue responder ──────────────────────────
