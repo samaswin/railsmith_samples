@@ -19,6 +19,15 @@ def assert(label, condition)
   end
 end
 
+# Helper: when the :test queue adapter records an enqueued job, the args it
+# stores are *serialized* (kwargs get an `_aj_ruby2_keywords` marker, etc.).
+# Splatting them straight into perform_now leaks that marker as a real keyword
+# arg. This helper runs them through ActiveJob's deserializer first, returning
+# a clean symbol-keyed kwargs hash ready to splat.
+def aj_kwargs_from(serialized_arg)
+  ActiveJob::Arguments.deserialize([serialized_arg]).first.transform_keys(&:to_sym)
+end
+
 ctx = { current_domain: :blog }
 
 # ── 1. CRUD ───────────────────────────────────────────────────────────────────
@@ -708,6 +717,13 @@ Railsmith.configuration.async_job_class = Railsmith::AsyncNestedWriteJob
 Railsmith.configuration.async_enqueuer  = nil
 
 rich_ctx = { current_domain: :blog, request_id: "req-async-123", actor_id: 42, tenant_id: "t-9" }
+
+# Clean up any leftover row from a previous run — the "NOT yet persisted"
+# assertion below has to start from a known-empty state, otherwise a comment
+# this same test wrote on the previous run (and committed) will cause a false
+# failure.
+Comment.where(author: "Ctx", body: "Context test").delete_all
+
 rc1 = PostWithAsyncCommentsService.call(
   action: :create,
   params: {
@@ -743,7 +759,7 @@ Railsmith::Context.singleton_class.class_eval do
   end
 end
 
-Railsmith::AsyncNestedWriteJob.perform_now(**cprop_args.transform_keys(&:to_sym))
+Railsmith::AsyncNestedWriteJob.perform_now(**aj_kwargs_from(cprop_args))
 
 Railsmith::Context.singleton_class.class_eval do
   alias_method :build, :__orig_build_for_probe
@@ -1089,7 +1105,7 @@ assert("mixed: exactly one job enqueued for async association", ActiveJob::Base.
 
 # Run the job — now the async child should appear.
 mixed_job = ActiveJob::Base.queue_adapter.enqueued_jobs.last
-Railsmith::AsyncNestedWriteJob.perform_now(**mixed_job[:args].first.transform_keys(&:to_sym))
+Railsmith::AsyncNestedWriteJob.perform_now(**aj_kwargs_from(mixed_job[:args].first))
 assert("mixed: async comment persisted after job runs", Comment.exists?(post_id: rmx1.value.id, author: "Async"))
 
 # meta should have both nested entries with correct async flags
@@ -1164,7 +1180,7 @@ assert("true async: job captured by :test adapter", ActiveJob::Base.queue_adapte
 
 # Now manually execute the captured job to prove it works
 job_data = ActiveJob::Base.queue_adapter.enqueued_jobs.last
-Railsmith::AsyncNestedWriteJob.perform_now(**job_data[:args].first.transform_keys(&:to_sym))
+Railsmith::AsyncNestedWriteJob.perform_now(**aj_kwargs_from(job_data[:args].first))
 
 assert("true async: child persisted AFTER job runs", Comment.exists?(post_id: rtc1.value.id, author: "Deferred"))
 
@@ -1183,7 +1199,7 @@ assert("true async has_one: meta NOT yet persisted", !PostMeta.exists?(post_id: 
 assert("true async has_one: job enqueued", ActiveJob::Base.queue_adapter.enqueued_jobs.size >= 1)
 
 job_data2 = ActiveJob::Base.queue_adapter.enqueued_jobs.last
-Railsmith::AsyncNestedWriteJob.perform_now(**job_data2[:args].first.transform_keys(&:to_sym))
+Railsmith::AsyncNestedWriteJob.perform_now(**aj_kwargs_from(job_data2[:args].first))
 assert("true async has_one: meta persisted AFTER job runs", PostMeta.exists?(post_id: rtc2.value.id, summary: "Deferred meta"))
 
 # ── 32. JOB FAILURE: child fails, parent stays committed ────────────────────
@@ -1215,7 +1231,7 @@ assert("job failure: child NOT persisted", !Comment.exists?(post_id: rjf1.value.
 job_data_fail = ActiveJob::Base.queue_adapter.enqueued_jobs.last
 failed_job_error = nil
 begin
-  Railsmith::AsyncNestedWriteJob.perform_now(**job_data_fail[:args].first.transform_keys(&:to_sym))
+  Railsmith::AsyncNestedWriteJob.perform_now(**aj_kwargs_from(job_data_fail[:args].first))
 rescue => e
   failed_job_error = e
 end
@@ -1223,6 +1239,7 @@ assert("job failure: job raises on invalid child", !failed_job_error.nil?)
 
 expected_failure_classes = [
   ActiveRecord::RecordInvalid,
+  defined?(Railsmith::Failure)          ? Railsmith::Failure          : nil,
   defined?(Railsmith::NestedWriteError) ? Railsmith::NestedWriteError : nil,
   defined?(Railsmith::ValidationError)  ? Railsmith::ValidationError  : nil,
   defined?(Railsmith::Error)            ? Railsmith::Error            : nil
@@ -1265,7 +1282,7 @@ rfi1 = PostWithAsyncCommentsService.call(
 # Execute the failing job
 job_data_fi = ActiveJob::Base.queue_adapter.enqueued_jobs.last
 begin
-  Railsmith::AsyncNestedWriteJob.perform_now(**job_data_fi[:args].first.transform_keys(&:to_sym))
+  Railsmith::AsyncNestedWriteJob.perform_now(**aj_kwargs_from(job_data_fi[:args].first))
 rescue
   # expected
 end
@@ -1329,7 +1346,7 @@ assert("parent deleted: parent gone", !Post.exists?(deleted_post_id))
 job_data_pd = ActiveJob::Base.queue_adapter.enqueued_jobs.last
 parent_deleted_error = nil
 begin
-  Railsmith::AsyncNestedWriteJob.perform_now(**job_data_pd[:args].first.transform_keys(&:to_sym))
+  Railsmith::AsyncNestedWriteJob.perform_now(**aj_kwargs_from(job_data_pd[:args].first))
 rescue ActiveRecord::RecordNotFound => e
   parent_deleted_error = e
 rescue => e
@@ -1367,7 +1384,7 @@ assert("async _destroy: comment still exists before job", Comment.exists?(c_to_d
 
 # Execute the job
 job_data_ad = ActiveJob::Base.queue_adapter.enqueued_jobs.last
-Railsmith::AsyncNestedWriteJob.perform_now(**job_data_ad[:args].first.transform_keys(&:to_sym))
+Railsmith::AsyncNestedWriteJob.perform_now(**aj_kwargs_from(job_data_ad[:args].first))
 assert("async _destroy: comment destroyed after job runs", !Comment.exists?(c_to_destroy.id))
 
 # ── 36. ASYNC MIXED OPS (create + update + destroy in one payload) ──────────
@@ -1378,7 +1395,10 @@ ActiveJob::Base.queue_adapter.enqueued_jobs.clear
 Railsmith.configuration.async_job_class = Railsmith::AsyncNestedWriteJob
 Railsmith.configuration.async_enqueuer  = nil
 
-# Setup: post with two existing comments
+# Setup: post with two existing comments. Wipe any leftover "Newcomer" rows
+# from a previous run so the "NOT yet created" pre-state assertion below
+# starts from a known-empty state.
+Comment.where(author: "Newcomer").delete_all
 p_mixed = Post.create!(title: "Async Mixed Ops", status: "draft")
 c_keep = Comment.create!(post_id: p_mixed.id, author: "Keeper", body: "Will be updated")
 c_remove = Comment.create!(post_id: p_mixed.id, author: "Goner", body: "Will be destroyed")
@@ -1405,7 +1425,7 @@ assert("async mixed ops: newcomer NOT yet created", !Comment.exists?(author: "Ne
 
 # Execute the job
 job_data_am = ActiveJob::Base.queue_adapter.enqueued_jobs.last
-Railsmith::AsyncNestedWriteJob.perform_now(**job_data_am[:args].first.transform_keys(&:to_sym))
+Railsmith::AsyncNestedWriteJob.perform_now(**aj_kwargs_from(job_data_am[:args].first))
 
 assert("async mixed ops: keeper updated", Comment.find(c_keep.id).body == "Updated body")
 assert("async mixed ops: goner destroyed", !Comment.exists?(c_remove.id))
@@ -1426,6 +1446,12 @@ Object.const_set(:BulkAsyncPostService, Class.new(Railsmith::BaseService) {
   domain :blog
   has_many :comments, service: CommentService, async: true
 })
+
+# Wipe leftover posts (and their cascaded comments) from previous runs.
+# Without this, Post.find_by(title: ...) below returns the OLDEST matching
+# post — which already has a persisted BulkA/BulkB comment from the previous
+# run's drained job — causing the "NOT yet persisted" assertions to fail.
+Post.where(title: ["Bulk Async A", "Bulk Async B"]).destroy_all
 
 rab1 = BulkAsyncPostService.call(
   action: :bulk_create,
@@ -1457,7 +1483,7 @@ assert("async bulk_create: jobs enqueued", ActiveJob::Base.queue_adapter.enqueue
 
 # Execute all captured jobs
 ActiveJob::Base.queue_adapter.enqueued_jobs.each do |jd|
-  Railsmith::AsyncNestedWriteJob.perform_now(**jd[:args].first.transform_keys(&:to_sym))
+  Railsmith::AsyncNestedWriteJob.perform_now(**aj_kwargs_from(jd[:args].first))
 end
 assert("async bulk_create: comment A persisted after job", Comment.exists?(post_id: post_a.id, author: "BulkA"))
 assert("async bulk_create: comment B persisted after job", Comment.exists?(post_id: post_b.id, author: "BulkB"))
@@ -1614,7 +1640,7 @@ Railsmith::Context.singleton_class.class_eval do
   end
 end
 
-Railsmith::AsyncNestedWriteJob.perform_now(**job_args.transform_keys(&:to_sym))
+Railsmith::AsyncNestedWriteJob.perform_now(**aj_kwargs_from(job_args))
 
 Railsmith::Context.singleton_class.class_eval do
   alias_method :build, :__orig_build_for_rt_probe

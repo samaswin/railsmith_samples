@@ -296,21 +296,30 @@ if sq_up
   sq_count = SolidQueue::Job.count
   assert("solid_queue: row present in solid_queue_jobs (#{sq_count})", sq_count >= 1)
 
-  # Drain by iterating ready executions / jobs. SolidQueue's public API has
-  # changed across versions, so try a few shapes.
+  # Drain by iterating ready executions / jobs. SolidQueue stores the FULL
+  # ActiveJob serialized payload in `arguments`, so feed it straight to
+  # ActiveJob::Base.execute — do NOT re-wrap it under another "arguments" key
+  # (that produces 12 positional args from the 12 payload keys and blows up
+  # any perform(**kwargs) signature).
   drained_sq = 0
   SolidQueue::Job.where(finished_at: nil).order(:created_at).find_each do |sqj|
-    if sqj.respond_to?(:arguments) && sqj.respond_to?(:class_name)
-      klass = sqj.class_name.safe_constantize
-      klass&.new&.deserialize({ "job_class" => sqj.class_name, "arguments" => sqj.arguments, "job_id" => sqj.active_job_id })
-      # Rails ActiveJob can reconstruct from the serialized row:
-      serialized = { "job_class" => sqj.class_name, "arguments" => sqj.arguments, "job_id" => sqj.active_job_id,
-                     "queue_name" => sqj.queue_name, "priority" => sqj.priority, "executions" => 0, "exception_executions" => {},
-                     "locale" => "en", "timezone" => "UTC", "enqueued_at" => Time.now.iso8601, "scheduled_at" => nil, "provider_job_id" => nil }
-      ActiveJob::Base.execute(serialized)
-      sqj.update!(finished_at: Time.current) if sqj.respond_to?(:update!)
-      drained_sq += 1
-    end
+    payload = sqj.arguments
+    # Some SolidQueue versions store just the inner args array — handle both shapes.
+    payload = {
+      "job_class"  => sqj.class_name,
+      "job_id"     => sqj.active_job_id,
+      "queue_name" => sqj.queue_name,
+      "priority"   => sqj.priority,
+      "arguments"  => payload,
+      "executions" => 0, "exception_executions" => {},
+      "locale" => "en", "timezone" => "UTC",
+      "enqueued_at" => Time.now.iso8601,
+      "scheduled_at" => nil, "provider_job_id" => nil
+    } unless payload.is_a?(Hash) && payload.key?("job_class")
+
+    ActiveJob::Base.execute(payload)
+    sqj.update!(finished_at: Time.current) if sqj.respond_to?(:update!)
+    drained_sq += 1
   end
   assert("solid_queue: drained #{drained_sq} job(s)", drained_sq >= 1)
   assert("solid_queue: comment written after drain",
