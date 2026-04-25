@@ -232,17 +232,8 @@ rnd = PostWithCommentsService.call(action: :destroy, params: { id: post_to_destr
 assert("nested cascade destroy", rnd.success?)
 assert("cascade: comments gone", Comment.where(post_id: post_to_destroy).count == 0)
 
-# ── 6. DEPENDENT: :nullify ────────────────────────────────────────────────────
-puts "\n=== 6. Dependent: :nullify ==="
-
-p_null = Post.create!(title: "Nullify Post", status: "draft")
-c_null = Comment.create!(post_id: p_null.id, author: "Dan", body: "Stays!")
-rn2 = PostNullifyService.call(action: :destroy, params: { id: p_null.id }, context: ctx)
-assert("nullify: parent destroyed", rn2.success? && !Post.exists?(p_null.id))
-assert("nullify: child still exists with null FK", Comment.exists?(c_null.id) && Comment.find(c_null.id).post_id.nil?)
-
-# ── 7. DEPENDENT: :restrict ───────────────────────────────────────────────────
-puts "\n=== 7. Dependent: :restrict ==="
+# ── 6. DEPENDENT: :restrict ───────────────────────────────────────────────────
+puts "\n=== 6. Dependent: :restrict ==="
 
 p_restr = Post.create!(title: "Restrict Post", status: "draft")
 Comment.create!(post_id: p_restr.id, author: "Eve", body: "Block me!")
@@ -254,8 +245,8 @@ p_empty = Post.create!(title: "Restrict Empty", status: "draft")
 rr2 = PostRestrictService.call(action: :destroy, params: { id: p_empty.id }, context: ctx)
 assert("restrict: succeeds when no children", rr2.success?)
 
-# ── 8. BULK ───────────────────────────────────────────────────────────────────
-puts "\n=== 8. Bulk ==="
+# ── 7. BULK ───────────────────────────────────────────────────────────────────
+puts "\n=== 7. Bulk ==="
 
 rb1 = BulkPostService.call(
   action: :bulk_create,
@@ -818,17 +809,6 @@ rescue ArgumentError => e
   assert("async+dependent:destroy raises ArgumentError", e.message.include?("async: true is not compatible"))
 end
 
-# async: true + dependent: :nullify
-begin
-  Class.new(Railsmith::BaseService) do
-    model Post
-    has_many :comments, service: CommentService, async: true, dependent: :nullify
-  end
-  assert("async+dependent:nullify raises ArgumentError", false)
-rescue ArgumentError => e
-  assert("async+dependent:nullify raises ArgumentError", e.message.include?("async: true is not compatible"))
-end
-
 # async: true + dependent: :restrict
 begin
   Class.new(Railsmith::BaseService) do
@@ -891,8 +871,11 @@ assert("Sidekiq: parent persisted", Post.exists?(title: "Sidekiq Async Post"))
 # Comments NOT written inline (enqueued to Sidekiq)
 assert("Sidekiq: comments NOT written inline", rs1.value.comments.reload.count == 0)
 assert("Sidekiq: job enqueued", fake_sidekiq_worker.jobs.size == 1)
-assert("Sidekiq: payload has correct association", fake_sidekiq_worker.jobs.first[:payload][:association] == "comments")
-assert("Sidekiq: payload has correct mode", fake_sidekiq_worker.jobs.first[:payload][:mode] == "create")
+sidekiq_payload = fake_sidekiq_worker.jobs.first[:payload]
+sidekiq_assoc = sidekiq_payload.is_a?(Hash) ? (sidekiq_payload[:association] || sidekiq_payload["association"]) : nil
+sidekiq_mode = sidekiq_payload.is_a?(Hash) ? (sidekiq_payload[:mode] || sidekiq_payload["mode"]) : nil
+assert("Sidekiq: payload has correct association", sidekiq_assoc.to_s == "comments")
+assert("Sidekiq: payload has correct mode", sidekiq_mode.to_s == "create")
 assert("Sidekiq: meta has job_id (jid)", rs1.meta.dig(:nested, :comments, :job_id) == "jid-1")
 
 # ── 24. ASYNC: Kicks-style publisher (publish path) ─────────────────────────
@@ -1702,3 +1685,5 @@ else
   puts "#{$failures.length}/#{total} FAILED:"
   $failures.each { |f| puts "  - #{f}" }
 end
+
+exit($failures.empty? ? 0 : 1)

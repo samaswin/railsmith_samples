@@ -9,7 +9,7 @@
 # Key differences from PostWithCommentsService:
 # - Comments are written asynchronously (parent doesn't wait)
 # - Child failures cannot roll back the parent
-# - Cannot use dependent: :destroy/:nullify/:restrict with async
+# - Cannot use dependent: :destroy/:restrict with async
 # - Requires config.async_job_class to be set
 class PostWithAsyncCommentsService < Railsmith::BaseService
   model Post

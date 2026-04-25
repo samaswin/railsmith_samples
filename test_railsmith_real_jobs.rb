@@ -78,25 +78,6 @@ rescue => e
   skip_section("Sidekiq+Redis", "Redis unreachable at #{sidekiq_redis_url} (#{e.class}: #{e.message})")
 end
 
-# KNOWN GEM BUG: railsmith builds its async payload with symbol keys and passes
-# it unchanged to `RailsmithNestedWriteWorker.perform_async(payload)`. Sidekiq
-# 7+ defaults to strict_args!, which rejects non-JSON-native types (Symbols).
-# The proper fix is in the gem:
-#   lib/railsmith/base_service/nested_writer/nested_write/async_enqueueing.rb
-# should deep_stringify_keys the payload before perform_async. Until that lands,
-# we stringify at our side here so the rest of this section can actually
-# exercise the Redis round-trip. Without this shim the gem crashes inside
-# Sidekiq's verify_json before a single byte reaches Redis.
-if sidekiq_up
-  unless RailsmithNestedWriteWorker.singleton_class.method_defined?(:__orig_perform_async)
-    RailsmithNestedWriteWorker.singleton_class.send(:alias_method, :__orig_perform_async, :perform_async)
-    RailsmithNestedWriteWorker.define_singleton_method(:perform_async) do |payload|
-      stringified = JSON.parse(JSON.generate(payload)) # forces symbols → strings recursively
-      __orig_perform_async(stringified)
-    end
-  end
-end
-
 if sidekiq_up
   queue_key = "queue:railsmith_nested_writes"
   # Start from a clean queue so assertions are deterministic.

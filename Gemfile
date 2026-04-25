@@ -2,7 +2,13 @@ source "https://rubygems.org"
 
 # Bundle edge Rails instead: gem "rails", github: "rails/rails", branch: "main"
 gem "rails", "~> 8.1.3"
-gem "railsmith", path: "../railsmith"
+
+railsmith_local_path = ENV.fetch("RAILSMITH_PATH", nil) || File.expand_path("../railsmith", __dir__)
+if File.directory?(railsmith_local_path)
+  gem "railsmith", path: railsmith_local_path
+else
+  gem "railsmith", "~> 1.3.0"
+end
 # The modern asset pipeline for Rails [https://github.com/rails/propshaft]
 gem "propshaft"
 # Use postgresql as the database for Active Record
