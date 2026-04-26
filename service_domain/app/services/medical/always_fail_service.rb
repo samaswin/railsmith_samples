@@ -5,7 +5,7 @@ module Medical
     domain :medical
 
     def fail
-      Result.failure(code: :unexpected, message: "Forced failure (rollback demo)")
+      Railsmith::Result.failure(code: :unexpected, message: "Forced failure (rollback demo)")
     end
   end
 end
