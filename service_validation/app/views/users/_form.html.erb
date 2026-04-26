@@ -1,0 +1,78 @@
+<%= form_with model: user do |f| %>
+  <% if defined?(@service_validation_errors) && @service_validation_errors.present? %>
+    <div style="border:1px solid #fde68a; background:#fffbeb; padding:12px 14px; border-radius:12px; margin-bottom: 14px;">
+      <div style="font-weight:600; margin-bottom: 6px;">Service validation errors (Railsmith)</div>
+      <ul style="margin: 0; padding-left: 18px;">
+        <% @service_validation_errors.each do |attribute, messages| %>
+          <% Array(messages).each do |message| %>
+            <li><%= attribute.to_s.humanize %> <%= message %></li>
+          <% end %>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <% if defined?(@model_validation_errors) && @model_validation_errors.present? %>
+    <div style="border:1px solid #fca5a5; background:#fff5f5; padding:12px 14px; border-radius:12px; margin-bottom: 14px;">
+      <div style="font-weight:600; margin-bottom: 6px;">Model validation errors (ActiveRecord)</div>
+      <ul style="margin: 0; padding-left: 18px;">
+        <% @model_validation_errors.each do |attribute, messages| %>
+          <% Array(messages).each do |message| %>
+            <% if message.is_a?(String) %>
+              <li><%= message %></li>
+            <% else %>
+              <li><%= attribute.to_s.humanize %> <%= message %></li>
+            <% end %>
+          <% end %>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <% if user.errors.any? %>
+    <div style="border:1px solid #f3c2c2; background:#fff5f5; padding:12px 14px; border-radius:12px; margin-bottom: 14px;">
+      <div style="font-weight:600; margin-bottom: 6px;">Please fix these errors:</div>
+      <ul style="margin: 0; padding-left: 18px;">
+        <% user.errors.full_messages.each do |message| %>
+          <li><%= message %></li>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <div style="display:grid; gap:8px;">
+    <%= f.label :email, style: "font-weight:600;" %>
+    <%= f.email_field :email, autofocus: true, style: "padding:10px 12px; border-radius:10px; border:1px solid #ddd; width:100%;" %>
+  </div>
+
+  <div style="display:grid; gap:8px; margin-top: 12px;">
+    <%= f.label :first_name, style: "font-weight:600;" %>
+    <%= f.text_field :first_name, style: "padding:10px 12px; border-radius:10px; border:1px solid #ddd; width:100%;" %>
+  </div>
+
+  <div style="display:grid; gap:8px; margin-top: 12px;">
+    <%= f.label :last_name, style: "font-weight:600;" %>
+    <%= f.text_field :last_name, style: "padding:10px 12px; border-radius:10px; border:1px solid #ddd; width:100%;" %>
+  </div>
+
+  <div style="display:grid; gap:8px; margin-top: 12px;">
+    <%= f.label :date_of_joining, "Date of joining", style: "font-weight:600;" %>
+    <%= f.date_field :date_of_joining, style: "padding:10px 12px; border-radius:10px; border:1px solid #ddd; width:100%;" %>
+  </div>
+
+  <div style="display:grid; gap:8px; margin-top: 12px;">
+    <%= f.label :phone_number, style: "font-weight:600;" %>
+    <%= f.telephone_field :phone_number, style: "padding:10px 12px; border-radius:10px; border:1px solid #ddd; width:100%;" %>
+  </div>
+
+  <div style="display:grid; gap:8px; margin-top: 12px;">
+    <%= f.label :name, style: "font-weight:600;" %>
+    <%= f.text_field :name, style: "padding:10px 12px; border-radius:10px; border:1px solid #ddd; width:100%;" %>
+  </div>
+
+  <div style="margin-top: 16px; display:flex; gap: 10px; align-items:center;">
+    <%= f.submit "Save", style: "cursor:pointer; padding:10px 12px; border-radius:10px; border:1px solid #1f2937; background:#111827; color:#fff;" %>
+    <%= link_to "Cancel", users_path, style: "text-decoration:none; padding:10px 12px; border-radius:10px; border:1px solid #ddd; color:#111827; background:#fff;" %>
+  </div>
+<% end %>
+

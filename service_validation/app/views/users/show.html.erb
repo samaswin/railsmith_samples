@@ -1,0 +1,19 @@
+<main style="max-width: 900px; margin: 48px auto; padding: 0 16px;">
+  <% if notice.present? %>
+    <div style="border:1px solid #c7f0d8; background:#f0fff4; padding:12px 14px; border-radius:12px; margin-bottom: 14px;">
+      <%= notice %>
+    </div>
+  <% end %>
+
+  <header style="display:flex; align-items: baseline; justify-content: space-between; gap: 16px;">
+    <div>
+      <h1 style="margin: 0;"><%= @user.full_name.presence || @user.name.presence || @user.email %></h1>
+      <div style="color:#666; margin-top: 6px;"><%= @user.email %></div>
+      <div style="color:#666; margin-top: 6px;">Joined: <%= @user.date_of_joining || "—" %></div>
+    </div>
+    <div style="display:flex; gap: 12px; align-items:center;">
+      <%= link_to "All users", users_path, style: "text-decoration:none; color:#111827;" %>
+    </div>
+  </header>
+</main>
+
