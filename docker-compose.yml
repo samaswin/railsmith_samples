@@ -19,26 +19,24 @@
 services:
   postgres:
     image: postgres:16
-    container_name: railsmith_sample_postgres
     environment:
-      POSTGRES_USER: aswin
-      POSTGRES_PASSWORD: aswin
-      POSTGRES_DB: railsmith_sample_development
+      POSTGRES_USER: ${POSTGRES_USER:-aswin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aswin}
+      POSTGRES_DB: ${POSTGRES_DB:-app_development}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U aswin -d railsmith_sample_development"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aswin} -d ${POSTGRES_DB:-app_development}"]
       interval: 3s
       timeout: 3s
       retries: 20
 
   redis:
     image: redis:7-alpine
-    container_name: railsmith_sample_redis
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
@@ -47,10 +45,9 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
-    container_name: railsmith_sample_rabbitmq
     ports:
       - "5672:5672"
-      - "15672:15672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
@@ -58,4 +55,4 @@ services:
       retries: 20
 
 volumes:
-  pg_data:
+  postgres_data:

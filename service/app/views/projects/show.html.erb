@@ -1,0 +1,22 @@
+<main style="max-width: 900px; margin: 48px auto; padding: 0 16px;">
+  <% if notice.present? %>
+    <div style="border:1px solid #c7f0d8; background:#f0fff4; padding:12px 14px; border-radius:12px; margin-bottom: 14px;">
+      <%= notice %>
+    </div>
+  <% end %>
+
+  <header style="display:flex; align-items: baseline; justify-content: space-between; gap: 16px;">
+    <h1 style="margin: 0;"><%= @project.name %></h1>
+    <div style="display:flex; gap: 12px; align-items:center;">
+      <%= link_to "Edit", edit_project_path(@project), style: "text-decoration:none; color:#111827;" %>
+      <%= button_to "Delete", project_path(@project), method: :delete, form: { data: { turbo_confirm: "Delete this project?" } }, style: "cursor:pointer; padding:8px 10px; border-radius:10px; border:1px solid #ddd; background:#fff; color:#111827;" %>
+      <%= link_to "All projects", projects_path, style: "text-decoration:none; color:#111827;" %>
+    </div>
+  </header>
+
+  <section style="margin-top: 14px; color:#666;">
+    <div>ID: <%= @project.id %></div>
+    <div>Created: <%= @project.created_at.to_fs(:long) %></div>
+  </section>
+</main>
+

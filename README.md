@@ -1,56 +1,48 @@
-# Railsmith sample smoke
+# railsmith_samples
 
-Optional **non-Rails** scripts that exercise `Railsmith::Pipeline` and services the way a small app would, without shipping a full Rails skeleton in this repository.
+This repo contains multiple Rails apps that share the same local infrastructure (Postgres/Redis/RabbitMQ) via the root `docker-compose.yml`.
 
-## Checkout smoke
+## Projects
 
-From the **gem root** (parent of this directory):
+- `service/`
+- `service_domain/`
 
-```bash
-bundle exec ruby railsmith_sample/smoke/checkout_smoke.rb
+## Start shared infrastructure (recommended per project)
+
+The root `docker-compose.yml` is **parameterized** so each app can choose its own DB name and (optionally) host ports.
+
+### `service/`
+
+From `railsmith_samples/service` in PowerShell:
+
+```powershell
+$env:POSTGRES_DB="service_development"
+$env:POSTGRES_USER="aswin"
+$env:POSTGRES_PASSWORD="aswin"
+docker compose -f ..\docker-compose.yml up -d
 ```
 
-Exit code is `0` when the sample pipeline completes successfully.
+### `service_domain/`
 
-## Async nested writes — contract tests
+From `railsmith_samples/service_domain` in PowerShell:
 
-Exercises the Railsmith async nested write path against ActiveJob's `:inline` and `:test` adapters. Runs entirely in-process; no external services required.
-
-```bash
-bundle exec rails runner test_railsmith.rb
+```powershell
+$env:POSTGRES_DB="service_domain_development"
+$env:POSTGRES_USER="aswin"
+$env:POSTGRES_PASSWORD="aswin"
+docker compose -f ..\docker-compose.yml up -d
 ```
 
-## Async nested writes — real backend tests
+## Notes
 
-Drives real queue backends: Sidekiq through Redis, DelayedJob/GoodJob/SolidQueue through Postgres rows, and Sneakers/Kicks through RabbitMQ. Each section preflights its service and skips cleanly when the backend isn't reachable.
+- If you already have Postgres on `5432` or Redis on `6379`, override the published ports:
 
-Start the services:
-
-```bash
-docker compose up -d          # postgres, redis, rabbitmq
+```powershell
+$env:POSTGRES_PORT="5433"
+$env:REDIS_PORT="6380"
+docker compose -f ..\docker-compose.yml up -d
 ```
 
-Install the gem-backed schemas (one-time; only for the backends you want to exercise):
+- RabbitMQ is optional. The management UI defaults to `http://localhost:15672` (guest/guest). You can override it with:
+  - `RABBITMQ_MANAGEMENT_PORT`
 
-```bash
-bundle exec rails generate delayed_job:active_record
-bundle exec rails generate good_job:install
-bundle exec rails solid_queue:install
-bundle exec rails db:migrate
-```
-
-Run the suite:
-
-```bash
-bundle exec rails runner test_railsmith_real_jobs.rb
-```
-
-Override service URLs if needed:
-
-```bash
-SIDEKIQ_REDIS_URL=redis://localhost:6380/0 \
-RABBITMQ_URL=amqp://guest:guest@localhost:5672 \
-  bundle exec rails runner test_railsmith_real_jobs.rb
-```
-
-Exit code is `0` when every non-skipped assertion passes.
