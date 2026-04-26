@@ -24,6 +24,38 @@
   </head>
 
   <body>
+    <div style="border-bottom: 1px solid #eee; background:#fff;">
+      <nav style="max-width: 900px; margin: 0 auto; padding: 14px 16px; display:flex; align-items:center; justify-content:space-between; gap: 16px;">
+        <div style="font-weight:700;">
+          <%= link_to "Service", root_path, style: "text-decoration:none; color:#111827;" %>
+        </div>
+        <div style="display:flex; gap: 10px; align-items:center;">
+          <%= link_to "Projects", projects_path, style: "text-decoration:none; padding:6px 10px; border-radius:10px; border:1px solid #ddd; color:#111827; background:#fff;" %>
+          <%= link_to "Users", users_path, style: "text-decoration:none; padding:6px 10px; border-radius:10px; border:1px solid #ddd; color:#111827; background:#fff;" %>
+        </div>
+      </nav>
+    </div>
+
+    <% if defined?(@sql_queries) %>
+      <div style="border-bottom: 1px solid #f3e8ff; background:#faf5ff;">
+        <div style="max-width: 900px; margin: 0 auto; padding: 10px 16px; color:#581c87;">
+          <div style="display:flex; align-items:baseline; justify-content:space-between; gap: 12px;">
+            <div style="font-weight:700;">SQL queries: <%= @sql_queries.length %></div>
+            <div style="font-size: 13px;">
+              <%= link_to "Hide", url_for(params.permit!.to_h.except("sql")), style: "color:inherit;" %>
+            </div>
+          </div>
+
+          <% if @sql_queries.present? %>
+            <details style="margin-top: 8px;">
+              <summary style="cursor:pointer;">Show queries</summary>
+              <pre style="margin:10px 0 0 0; padding:10px 12px; border-radius:10px; background:#fff; border:1px solid #f3e8ff; overflow:auto; white-space:pre-wrap;"><%= @sql_queries.join("\n\n") %></pre>
+            </details>
+          <% end %>
+        </div>
+      </div>
+    <% end %>
+
     <%= yield %>
   </body>
 </html>

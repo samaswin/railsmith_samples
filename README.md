@@ -2,6 +2,8 @@
 
 This repo contains multiple Rails apps that share the same local infrastructure (Postgres/Redis/RabbitMQ) via the root `docker-compose.yml`.
 
+These projects are for testing the `railsmith` service gem.
+
 ## Projects
 
 - `service/`

@@ -1,0 +1,11 @@
+<main style="max-width: 900px; margin: 48px auto; padding: 0 16px;">
+  <header style="display:flex; align-items: baseline; justify-content: space-between; gap: 16px;">
+    <h1 style="margin: 0;">New reader</h1>
+    <%= link_to "Back to user", user_path(@user), style: "text-decoration:none; color:#111827;" %>
+  </header>
+
+  <section style="margin-top: 18px;">
+    <%= render "form", user: @user, reader: @reader %>
+  </section>
+</main>
+

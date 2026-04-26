@@ -1,0 +1,51 @@
+<main style="max-width: 900px; margin: 48px auto; padding: 0 16px;">
+  <% if notice.present? %>
+    <div style="border:1px solid #c7f0d8; background:#f0fff4; padding:12px 14px; border-radius:12px; margin-bottom: 14px;">
+      <%= notice %>
+    </div>
+  <% end %>
+
+  <header style="display:flex; align-items: baseline; justify-content: space-between; gap: 16px;">
+    <div>
+      <h1 style="margin: 0;"><%= @user.name.presence || @user.email %></h1>
+      <div style="color:#666; margin-top: 6px;"><%= @user.email %></div>
+    </div>
+    <div style="display:flex; gap: 12px; align-items:center;">
+      <%= link_to "Edit", edit_user_path(@user), style: "text-decoration:none; color:#111827;" %>
+      <%= button_to "Delete", user_path(@user), method: :delete, form: { data: { turbo_confirm: "Delete this user?" } }, style: "cursor:pointer; padding:8px 10px; border-radius:10px; border:1px solid #ddd; background:#fff; color:#111827;" %>
+      <%= link_to "All users", users_path, style: "text-decoration:none; color:#111827;" %>
+    </div>
+  </header>
+
+  <section style="margin-top: 18px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap: 16px;">
+      <h2 style="margin: 0;">Readers</h2>
+      <%= link_to "Add reader", new_user_reader_path(@user), style: "text-decoration:none; padding:10px 12px; border-radius:10px; border:1px solid #ddd; background:#fff;" %>
+    </div>
+
+    <% if @user.readers.any? %>
+      <ul style="list-style:none; padding:0; margin:12px 0 0 0; display:grid; gap:10px;">
+        <% @user.readers.each do |reader| %>
+          <li style="border:1px solid #eee; border-radius:12px; padding:14px 16px; background:#fff;">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap: 16px;">
+              <div>
+                <div style="font-weight:600;"><%= link_to reader.name, reader_path(reader), style: "color:inherit; text-decoration:none;" %></div>
+                <div style="color:#666; font-size: 13px; margin-top: 4px;">Created <%= time_ago_in_words(reader.created_at) %> ago</div>
+              </div>
+              <div style="display:flex; align-items:center; gap: 10px;">
+                <%= link_to "Edit", edit_reader_path(reader), style: "text-decoration:none; color:#111827; font-size: 13px;" %>
+                <%= button_to "Delete", reader_path(reader), method: :delete, form: { data: { turbo_confirm: "Delete this reader?" } }, style: "cursor:pointer; padding:6px 10px; border-radius:10px; border:1px solid #ddd; background:#fff; color:#111827; font-size: 13px;" %>
+              </div>
+            </div>
+          </li>
+        <% end %>
+      </ul>
+    <% else %>
+      <div style="margin-top: 12px; padding: 18px 16px; border: 1px dashed #ddd; border-radius: 12px; background: #fafafa;">
+        <div style="font-weight:600;">No readers yet</div>
+        <div style="color:#666; margin-top:6px;">Add one for this user.</div>
+      </div>
+    <% end %>
+  </section>
+</main>
+

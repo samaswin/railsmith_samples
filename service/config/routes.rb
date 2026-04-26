@@ -13,4 +13,9 @@ Rails.application.routes.draw do
   root "projects#index"
 
   resources :projects
+  resources :users do
+    resources :readers, only: %i[index new create]
+  end
+
+  resources :readers, except: %i[index new create]
 end

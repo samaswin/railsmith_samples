@@ -1,0 +1,28 @@
+<%= form_with model: user do |f| %>
+  <% if user.errors.any? %>
+    <div style="border:1px solid #f3c2c2; background:#fff5f5; padding:12px 14px; border-radius:12px; margin-bottom: 14px;">
+      <div style="font-weight:600; margin-bottom: 6px;">Please fix these errors:</div>
+      <ul style="margin: 0; padding-left: 18px;">
+        <% user.errors.full_messages.each do |message| %>
+          <li><%= message %></li>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <div style="display:grid; gap:8px;">
+    <%= f.label :email, style: "font-weight:600;" %>
+    <%= f.email_field :email, required: true, autofocus: true, style: "padding:10px 12px; border-radius:10px; border:1px solid #ddd; width:100%;" %>
+  </div>
+
+  <div style="display:grid; gap:8px; margin-top: 12px;">
+    <%= f.label :name, style: "font-weight:600;" %>
+    <%= f.text_field :name, style: "padding:10px 12px; border-radius:10px; border:1px solid #ddd; width:100%;" %>
+  </div>
+
+  <div style="margin-top: 16px; display:flex; gap: 10px; align-items:center;">
+    <%= f.submit "Save", style: "cursor:pointer; padding:10px 12px; border-radius:10px; border:1px solid #1f2937; background:#111827; color:#fff;" %>
+    <%= link_to "Cancel", users_path, style: "text-decoration:none; padding:10px 12px; border-radius:10px; border:1px solid #ddd; color:#111827; background:#fff;" %>
+  </div>
+<% end %>
+
