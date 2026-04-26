@@ -7,8 +7,16 @@ class UserService < Railsmith::BaseService
   input :first_name, String, required: true, transform: ->(v) { v.strip }
   input :last_name, String, required: true, transform: ->(v) { v.strip }
   input :date_of_joining, :date_blank_to_nil, required: true
+  input :status, String, in: %w[active inactive], default: "active"
   input :phone_number, String, default: nil, transform: ->(v) { v.strip }
   input :name, String, default: nil, transform: ->(v) { v.strip }
+
+  def create
+    val = validate(params[:attributes], contract: Contracts::UserCreateContract.new)
+    return val if val.failure?
+
+    super
+  end
 
   def show
     find_one

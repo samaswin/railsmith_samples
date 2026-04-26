@@ -5,7 +5,11 @@
       <ul style="margin: 0; padding-left: 18px;">
         <% @service_validation_errors.each do |attribute, messages| %>
           <% Array(messages).each do |message| %>
-            <li><%= attribute.to_s.humanize %> <%= message %></li>
+            <% formatted_message = message.to_s %>
+            <% if attribute.to_sym == :status && formatted_message.start_with?("must be one of:") %>
+              <% formatted_message = "must be Active or Inactive" %>
+            <% end %>
+            <li><%= attribute.to_s.humanize %> <%= formatted_message %></li>
           <% end %>
         <% end %>
       </ul>
@@ -63,6 +67,11 @@
   <div style="display:grid; gap:8px; margin-top: 12px;">
     <%= f.label :phone_number, style: "font-weight:600;" %>
     <%= f.telephone_field :phone_number, style: "padding:10px 12px; border-radius:10px; border:1px solid #ddd; width:100%;" %>
+  </div>
+
+  <div style="display:grid; gap:8px; margin-top: 12px;">
+    <%= f.label :status, style: "font-weight:600;" %>
+    <%= f.select :status, [["Active", "active"], ["Inactive", "inactive"]], { include_blank: true }, style: "padding:10px 12px; border-radius:10px; border:1px solid #ddd; width:100%; background:#fff;" %>
   </div>
 
   <div style="display:grid; gap:8px; margin-top: 12px;">
